@@ -43,7 +43,31 @@ def _fmt_script_row(script: dict) -> tuple[str, str, str, str, str]:
     return title, creator, views, likes, " ".join(tags)
 
 
-def _print_scripts_table(scripts: list[dict], title: str = "Scripts") -> None:
+def _clean_description(raw: str, max_chars: int | None = None) -> str:
+    """Normalize a script description for terminal display.
+
+    Descriptions from the API often have no newlines; bullet characters (•)
+    are used as separators. This splits on them so each feature reads as its
+    own line.
+    """
+    import re
+    text = html.unescape(raw).strip()
+    # Split on bullet chars used as inline separators
+    text = re.sub(r"\s*[•·]\s*", "\n• ", text)
+    if max_chars and len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "…"
+    return text
+
+
+def _print_scripts_table(
+    scripts: list[dict],
+    title: str = "Scripts",
+    show_desc: bool = False,
+) -> None:
+    if show_desc:
+        _print_scripts_with_desc(scripts, title)
+        return
+
     table = Table(
         title=title,
         box=box.SIMPLE_HEAVY,
@@ -65,11 +89,51 @@ def _print_scripts_table(scripts: list[dict], title: str = "Scripts") -> None:
     console.print(table)
 
 
+def _print_scripts_with_desc(scripts: list[dict], title: str) -> None:
+    console.print()
+    console.rule(f"[bold]{escape(title)}[/bold]")
+    width = min(100, console.width - 6)
+
+    for s in scripts:
+        sid = s.get("_id", "")
+        script_title = escape(s.get("title", ""))
+        creator = escape(api.resolve_creator(s))
+        views = s.get("views", 0)
+        likes = s.get("likes", 0)
+
+        tags = []
+        if s.get("keySystem"):
+            tags.append("[red]KEY[/red]")
+        if s.get("paid"):
+            tags.append("[yellow]PAID[/yellow]")
+        if s.get("mobileReady"):
+            tags.append("[green]MOBILE[/green]")
+        tag_str = " ".join(tags) if tags else "[dim]free[/dim]"
+
+        console.print(f"  [bold cyan]{script_title}[/bold cyan]  {tag_str}")
+        console.print(f"  [dim]{sid}[/dim]  by [yellow]{creator}[/yellow]"
+                      f"  • views: {views:,}  likes: {likes:,}")
+
+        raw_desc = s.get("description", "").strip()
+        if raw_desc:
+            desc = _clean_description(raw_desc, max_chars=300)
+            console.print()
+            for line in desc.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                if len(line) > width:
+                    line = textwrap.fill(line, width=width)
+                console.print(f"    {escape(line)}")
+
+        console.print()
+
+
 def _print_script_detail(script: dict) -> None:
     sid = script.get("_id", "")
     title = escape(script.get("title", "Untitled"))
     creator = escape(api.resolve_creator(script))
-    description = html.unescape(script.get("description", "")).strip()
+    description = _clean_description(script.get("description", ""))
     views = script.get("views", 0)
     likes = script.get("likes", 0)
     dislikes = script.get("dislikes", 0)
@@ -156,7 +220,8 @@ def cli():
 @click.option("--unpatched", is_flag=True, help="Unpatched scripts only")
 @click.option("--verified", is_flag=True, help="Verified creators only")
 @click.option("--user", "-u", default=None, help="Filter by creator username")
-def scripts_cmd(page, search, order_by, sort, no_key, mobile, free, unpatched, verified, user):
+@click.option("--desc", "-d", is_flag=True, help="Show script descriptions")
+def scripts_cmd(page, search, order_by, sort, no_key, mobile, free, unpatched, verified, user, desc):
     """Browse or search scripts on rscripts.net."""
     console.print(f"[dim]Fetching scripts (page {page})…[/dim]")
     try:
@@ -188,7 +253,7 @@ def scripts_cmd(page, search, order_by, sort, no_key, mobile, free, unpatched, v
     title = f"Scripts — page {current}/{max_pages}"
     if search:
         title += f' — search: "{search}"'
-    _print_scripts_table(script_list, title=title)
+    _print_scripts_table(script_list, title=title, show_desc=desc)
     console.print(f"  [dim]Use --page {current + 1} to see the next page.[/dim]\n")
 
 
