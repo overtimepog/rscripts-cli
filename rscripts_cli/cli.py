@@ -330,21 +330,26 @@ def trending_cmd():
         highlight=True,
     )
     table.add_column("#", style="dim", width=3, justify="right")
-    table.add_column("ID", style="dim", width=26, no_wrap=True)
-    table.add_column("Title", style="cyan", max_width=52)
+    table.add_column("Title", style="cyan", max_width=40)
     table.add_column("Creator", style="yellow", max_width=20)
     table.add_column("Views (48h)", justify="right", style="white")
+    table.add_column("Raw URL", style="dim", overflow="fold")
 
     for rank, entry in enumerate(entries, 1):
-        sid = entry.get("_id", "")
         views_48h = str(entry.get("views", 0))
         script_info = entry.get("script") or {}
-        title = escape(script_info.get("title", "")[:52])
+        title = escape(script_info.get("title", "")[:40])
         user_info = entry.get("user") or {}
         creator = escape(user_info.get("username", "Unknown"))
-        table.add_row(str(rank), sid, title, creator, views_48h)
+        raw_url = script_info.get("rawScript", "") or "[dim]—[/dim]"
+        table.add_row(str(rank), title, creator, views_48h, raw_url)
 
     console.print(table)
+    console.print(
+        "  [dim]The trending endpoint doesn't expose a script ID — fetch "
+        "the code directly from the Raw URL column, or find the script "
+        "via `rs scripts --search` to get an ID for `rs script`/`rs raw`.[/dim]\n"
+    )
 
 
 # ---------------------------------------------------------------------------
