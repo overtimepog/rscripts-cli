@@ -1,4 +1,9 @@
-"""Click CLI for rscripts.net — browse, search, and view Roblox scripts."""
+"""Click CLI for browsing Roblox script sources from the terminal.
+
+Supports two sources:
+  rscripts   — rscripts.net (default)
+  scriptblox — scriptblox.com
+"""
 import html
 import sys
 import textwrap
@@ -10,6 +15,7 @@ from rich.table import Table
 from rich import box
 
 from . import api
+from . import scriptblox
 
 # Force UTF-8 on Windows to handle emoji in script titles
 if sys.platform == "win32":
@@ -20,6 +26,37 @@ if sys.platform == "win32":
         pass
 
 console = Console()
+
+SOURCES = ["rscripts", "scriptblox"]
+
+
+# ---------------------------------------------------------------------------
+# Source normalisation
+# ---------------------------------------------------------------------------
+
+def _sbx_to_rs(s: dict) -> dict:
+    """Normalise a scriptblox script dict to the rscripts schema."""
+    game = s.get("game") or {}
+    return {
+        "_id": s.get("_id", ""),
+        "title": s.get("title", ""),
+        "views": s.get("views", 0),
+        "likes": s.get("likeCount", 0),
+        "dislikes": s.get("dislikeCount", 0),
+        "keySystem": s.get("key", False),
+        "paid": s.get("scriptType") == "paid",
+        "mobileReady": False,
+        "description": s.get("features", ""),
+        "game": {"name": game.get("name", "Unknown")} if game else None,
+        "createdAt": s.get("createdAt", ""),
+        "lastUpdated": s.get("lastBump", s.get("createdAt", "")),
+        "rawScript": None,  # scriptblox embeds Lua inline, no URL
+        # scriptblox-specific extras surfaced as pseudo-fields
+        "_sbx_script": s.get("script", ""),
+        "_sbx_universal": s.get("isUniversal", False),
+        "_sbx_patched": s.get("isPatched", False),
+        "_sbx_verified": s.get("verified", False),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -38,21 +75,21 @@ def _fmt_script_row(script: dict) -> tuple[str, str, str, str, str]:
         tags.append("[yellow]PAID[/yellow]")
     if script.get("mobileReady"):
         tags.append("[green]MOBILE[/green]")
+    if script.get("_sbx_universal"):
+        tags.append("[blue]UNIV[/blue]")
+    if script.get("_sbx_verified"):
+        tags.append("[green]VRF[/green]")
+    if script.get("_sbx_patched"):
+        tags.append("[red]PTCH[/red]")
     if not tags:
         tags.append("[dim]free[/dim]")
     return title, creator, views, likes, " ".join(tags)
 
 
 def _clean_description(raw: str, max_chars: int | None = None) -> str:
-    """Normalize a script description for terminal display.
-
-    Descriptions from the API often have no newlines; bullet characters (•)
-    are used as separators. This splits on them so each feature reads as its
-    own line.
-    """
+    """Normalize a script description for terminal display."""
     import re
     text = html.unescape(raw).strip()
-    # Split on bullet chars used as inline separators
     text = re.sub(r"\s*[•·]\s*", "\n• ", text)
     if max_chars and len(text) > max_chars:
         text = text[:max_chars].rstrip() + "…"
@@ -108,6 +145,10 @@ def _print_scripts_with_desc(scripts: list[dict], title: str) -> None:
             tags.append("[yellow]PAID[/yellow]")
         if s.get("mobileReady"):
             tags.append("[green]MOBILE[/green]")
+        if s.get("_sbx_universal"):
+            tags.append("[blue]UNIV[/blue]")
+        if s.get("_sbx_verified"):
+            tags.append("[green]VRF[/green]")
         tag_str = " ".join(tags) if tags else "[dim]free[/dim]"
 
         console.print(f"  [bold cyan]{script_title}[/bold cyan]  {tag_str}")
@@ -151,6 +192,12 @@ def _print_script_detail(script: dict) -> None:
         flags.append("[green]Mobile Ready[/green]")
     if script.get("private"):
         flags.append("[dim]Private[/dim]")
+    if script.get("_sbx_universal"):
+        flags.append("[blue]Universal[/blue]")
+    if script.get("_sbx_verified"):
+        flags.append("[green]Verified[/green]")
+    if script.get("_sbx_patched"):
+        flags.append("[red]Patched[/red]")
 
     console.print()
     console.print(f"  [bold cyan]{title}[/bold cyan]  [dim]({sid})[/dim]")
@@ -187,16 +234,20 @@ def _print_script_detail(script: dict) -> None:
 
 
 @click.group()
-@click.version_option(version="0.1.0", prog_name="rs")
+@click.version_option(version="0.2.0", prog_name="rs")
 def cli():
-    """rs — browse rscripts.net from the terminal.
+    """rs — browse Roblox scripts from the terminal.
 
     \b
     Commands:
       scripts             Browse / search scripts
       script  <id>        View a script's details
-      trending            Show trending scripts (last 48 h)
+      trending            Show trending scripts
       raw     <id>        Print the raw Lua code of a script
+
+    \b
+    Use --source rscripts|scriptblox on any command to switch sources
+    (default: rscripts).
     """
 
 
@@ -206,51 +257,56 @@ def cli():
 
 
 @cli.command("scripts")
+@click.option("--source", "-s", type=click.Choice(SOURCES), default="rscripts",
+              show_default=True, help="Script source")
 @click.option("--page", "-p", default=1, show_default=True, help="Page number")
 @click.option("--search", "-q", default=None, help="Search query")
 @click.option("--order-by", default="date", show_default=True,
               type=click.Choice(["date", "views", "likes", "id"], case_sensitive=False),
-              help="Sort field")
+              help="Sort field (rscripts only)")
 @click.option("--sort", default="desc", show_default=True,
               type=click.Choice(["asc", "desc"], case_sensitive=False),
-              help="Sort direction")
+              help="Sort direction (rscripts only)")
 @click.option("--no-key", is_flag=True, help="Exclude key-system scripts")
-@click.option("--mobile", is_flag=True, help="Mobile-ready scripts only")
+@click.option("--mobile", is_flag=True, help="Mobile-ready scripts only (rscripts only)")
 @click.option("--free", is_flag=True, help="Free scripts only")
 @click.option("--unpatched", is_flag=True, help="Unpatched scripts only")
-@click.option("--verified", is_flag=True, help="Verified creators only")
-@click.option("--user", "-u", default=None, help="Filter by creator username")
+@click.option("--verified", is_flag=True, help="Verified creators only (rscripts only)")
+@click.option("--user", "-u", default=None, help="Filter by creator username (rscripts only)")
 @click.option("--desc", "-d", is_flag=True, help="Show script descriptions")
-def scripts_cmd(page, search, order_by, sort, no_key, mobile, free, unpatched, verified, user, desc):
-    """Browse or search scripts on rscripts.net."""
-    console.print(f"[dim]Fetching scripts (page {page})…[/dim]")
+def scripts_cmd(source, page, search, order_by, sort, no_key, mobile, free, unpatched, verified, user, desc):
+    """Browse or search scripts."""
+    console.print(f"[dim]Fetching scripts from {source} (page {page})…[/dim]")
     try:
-        data = api.get_scripts(
-            page=page,
-            q=search,
-            order_by=order_by,
-            sort=sort,
-            no_key_system=no_key,
-            mobile_only=mobile,
-            not_paid=free,
-            unpatched=unpatched,
-            verified_only=verified,
-            username=user,
-        )
+        if source == "scriptblox":
+            raw = scriptblox.search_scripts(
+                q=search, page=page,
+                mode="free" if free else None,
+                no_key=no_key, unpatched=unpatched,
+            )
+            result = raw.get("result", {})
+            script_list = [_sbx_to_rs(s) for s in result.get("scripts", [])]
+            current = page
+            max_pages = result.get("totalPages", "?")
+        else:
+            data = api.get_scripts(
+                page=page, q=search, order_by=order_by, sort=sort,
+                no_key_system=no_key, mobile_only=mobile, not_paid=free,
+                unpatched=unpatched, verified_only=verified, username=user,
+            )
+            script_list = data.get("scripts", [])
+            info = data.get("info", {})
+            current = info.get("currentPage", page)
+            max_pages = info.get("maxPages", "?")
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         return
-
-    script_list = data.get("scripts", [])
-    info = data.get("info", {})
-    current = info.get("currentPage", page)
-    max_pages = info.get("maxPages", "?")
 
     if not script_list:
         console.print("[yellow]No scripts found.[/yellow]")
         return
 
-    title = f"Scripts — page {current}/{max_pages}"
+    title = f"[{source}] Scripts — page {current}/{max_pages}"
     if search:
         title += f' — search: "{search}"'
     _print_scripts_table(script_list, title=title, show_desc=desc)
@@ -263,13 +319,18 @@ def scripts_cmd(page, search, order_by, sort, no_key, mobile, free, unpatched, v
 
 
 @cli.command("script")
+@click.option("--source", "-s", type=click.Choice(SOURCES), default="rscripts",
+              show_default=True, help="Script source")
 @click.argument("script_id")
 @click.option("--raw", "-r", is_flag=True, help="Also print the raw Lua code")
-def script_cmd(script_id, raw):
+def script_cmd(source, script_id, raw):
     """View details for a specific script by ID."""
-    console.print(f"[dim]Fetching script {script_id}…[/dim]")
+    console.print(f"[dim]Fetching script {script_id} from {source}…[/dim]")
     try:
-        data = api.get_script(script_id)
+        if source == "scriptblox":
+            data = scriptblox.get_script(script_id)
+        else:
+            data = api.get_script(script_id)
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         return
@@ -285,19 +346,28 @@ def script_cmd(script_id, raw):
         console.print("[yellow]Script not found.[/yellow]")
         return
 
+    if source == "scriptblox":
+        script = _sbx_to_rs(script)
+
     _print_script_detail(script)
 
     if raw:
-        raw_url = script.get("rawScript")
-        if not raw_url:
-            console.print("[yellow]No raw script URL available.[/yellow]")
-            return
-        console.print("[dim]Fetching raw Lua…[/dim]")
-        try:
-            code = api.fetch_raw_script(raw_url)
-        except Exception as e:
-            console.print(f"[red]Error fetching raw script:[/red] {e}")
-            return
+        if source == "scriptblox":
+            code = script.get("_sbx_script", "")
+            if not code:
+                console.print("[yellow]No inline script available.[/yellow]")
+                return
+        else:
+            raw_url = script.get("rawScript")
+            if not raw_url:
+                console.print("[yellow]No raw script URL available.[/yellow]")
+                return
+            console.print(f"[dim]Fetching raw Lua from {raw_url}…[/dim]")
+            try:
+                code = api.fetch_raw_script(raw_url)
+            except Exception as e:
+                console.print(f"[red]Error fetching raw script:[/red] {e}")
+                return
         console.rule("Lua Source")
         console.print(code)
         console.rule()
@@ -309,22 +379,44 @@ def script_cmd(script_id, raw):
 
 
 @cli.command("trending")
-def trending_cmd():
-    """Show the top trending scripts from the last 48 hours."""
-    console.print("[dim]Fetching trending scripts…[/dim]")
+@click.option("--source", "-s", type=click.Choice(SOURCES), default="rscripts",
+              show_default=True, help="Script source")
+def trending_cmd(source):
+    """Show trending scripts."""
+    console.print(f"[dim]Fetching trending scripts from {source}…[/dim]")
     try:
-        data = api.get_trending()
+        if source == "scriptblox":
+            data = scriptblox.get_trending()
+            entries = data.get("result", {}).get("scripts", [])
+            # Normalise to the row shape the table expects
+            rows = []
+            for rank, s in enumerate(entries, 1):
+                ns = _sbx_to_rs(s)
+                rows.append((rank, ns))
+        else:
+            data = api.get_trending()
+            entries = data.get("success", [])
+            rows = []
+            for rank, entry in enumerate(entries, 1):
+                si = entry.get("script") or {}
+                ui = entry.get("user") or {}
+                rows.append((rank, {
+                    "title": si.get("title", ""),
+                    "creator": ui.get("username", "Unknown"),
+                    "views": entry.get("views", 0),
+                    "raw": si.get("rawScript", ""),
+                    "id": entry.get("_id", ""),
+                }))
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         return
 
-    entries = data.get("success", [])
-    if not entries:
+    if not rows:
         console.print("[yellow]No trending scripts found.[/yellow]")
         return
 
     table = Table(
-        title="Trending Scripts (last 48 h)",
+        title=f"[{source}] Trending Scripts",
         box=box.SIMPLE_HEAVY,
         show_lines=False,
         highlight=True,
@@ -332,24 +424,30 @@ def trending_cmd():
     table.add_column("#", style="dim", width=3, justify="right")
     table.add_column("Title", style="cyan", max_width=40)
     table.add_column("Creator", style="yellow", max_width=20)
-    table.add_column("Views (48h)", justify="right", style="white")
-    table.add_column("Raw URL", style="dim", overflow="fold")
+    table.add_column("Views", justify="right", style="white")
 
-    for rank, entry in enumerate(entries, 1):
-        views_48h = str(entry.get("views", 0))
-        script_info = entry.get("script") or {}
-        title = escape(script_info.get("title", "")[:40])
-        user_info = entry.get("user") or {}
-        creator = escape(user_info.get("username", "Unknown"))
-        raw_url = script_info.get("rawScript", "") or "[dim]—[/dim]"
-        table.add_row(str(rank), title, creator, views_48h, raw_url)
+    for rank, row in rows:
+        if source == "scriptblox":
+            title = escape(row.get("title", "")[:40])
+            creator = escape(api.resolve_creator(row))
+            views = str(row.get("views", 0))
+        else:
+            title = escape(row.get("title", "")[:40])
+            creator = escape(row.get("creator", "Unknown"))
+            views = str(row.get("views", 0))
+        table.add_row(str(rank), title, creator, views)
 
     console.print(table)
-    console.print(
-        "  [dim]The trending endpoint doesn't expose a script ID — fetch "
-        "the code directly from the Raw URL column, or find the script "
-        "via `rs scripts --search` to get an ID for `rs script`/`rs raw`.[/dim]\n"
-    )
+    if source == "rscripts":
+        console.print(
+            "  [dim]The rscripts trending endpoint doesn't expose a script ID — "
+            "use `rs scripts --search` to find an ID for `rs script`/`rs raw`.[/dim]\n"
+        )
+    else:
+        console.print(
+            "  [dim]Use `rs script -s scriptblox <id>` for details, "
+            "`rs raw -s scriptblox <id>` for the Lua code.[/dim]\n"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -358,12 +456,17 @@ def trending_cmd():
 
 
 @cli.command("raw")
+@click.option("--source", "-s", type=click.Choice(SOURCES), default="rscripts",
+              show_default=True, help="Script source")
 @click.argument("script_id")
-def raw_cmd(script_id):
+def raw_cmd(source, script_id):
     """Print the raw Lua source code of a script."""
-    console.print(f"[dim]Fetching script {script_id}…[/dim]")
+    console.print(f"[dim]Fetching script {script_id} from {source}…[/dim]")
     try:
-        data = api.get_script(script_id)
+        if source == "scriptblox":
+            data = scriptblox.get_script(script_id)
+        else:
+            data = api.get_script(script_id)
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         return
@@ -379,19 +482,24 @@ def raw_cmd(script_id):
         console.print("[yellow]Script not found.[/yellow]")
         return
 
-    raw_url = script.get("rawScript")
-    if not raw_url:
-        console.print("[yellow]No raw script URL available.[/yellow]")
-        return
-
-    console.print(f"[dim]Fetching raw Lua from {raw_url}…[/dim]")
-    try:
-        code = api.fetch_raw_script(raw_url)
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        return
-
-    click.echo(code)
+    if source == "scriptblox":
+        code = script.get("script", "")
+        if not code:
+            console.print("[yellow]No inline script available.[/yellow]")
+            return
+        click.echo(code)
+    else:
+        raw_url = script.get("rawScript")
+        if not raw_url:
+            console.print("[yellow]No raw script URL available.[/yellow]")
+            return
+        console.print(f"[dim]Fetching raw Lua from {raw_url}…[/dim]")
+        try:
+            code = api.fetch_raw_script(raw_url)
+        except Exception as e:
+            console.print(f"[red]Error:[/red] {e}")
+            return
+        click.echo(code)
 
 
 # ---------------------------------------------------------------------------

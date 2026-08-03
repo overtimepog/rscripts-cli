@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rscripts-cli"
-version = "0.1.0"
-description = "Browse rscripts.net from the terminal"
+version = "0.2.0"
+description = "Browse Roblox scripts from rscripts.net and scriptblox.com"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.0",
