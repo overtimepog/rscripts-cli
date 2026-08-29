@@ -64,6 +64,27 @@ rs raw <id>
 rs raw <id> > script.lua
 ```
 
+### Hunt obfuscated scripts
+
+Scans popular pages and/or search queries, fingerprints the obfuscator
+(Luraph v1x, MoonSec, IronBrew, Synapse Xen, WeAreDevs, …), follows
+`loadstring(game:HttpGet(...))` loader chains up to 3 hops, and saves the real
+payloads with provenance headers.
+
+```bash
+# All obfuscated payloads from popular pages
+rs hunt
+
+# Luraph only, both sources, popular + "hub" searches, 5 pages each
+rs hunt -s rscripts -s scriptblox -q "hub" --obf Luraph -p 5
+
+# Game-specific (files land in ./hunt-all/)
+rs hunt -q "infected lands" -q "zombies"
+```
+
+Results table shows obfuscator, version, title, provenance (source script ID +
+payload URL). Each saved file carries the same provenance in a header comment.
+
 ## Script ID
 
 The `<id>` is the 24-character hex string shown in the ID column of `rs scripts` / `rs trending`, e.g. `6a2f2d5c25e0b3f946aa1088`.

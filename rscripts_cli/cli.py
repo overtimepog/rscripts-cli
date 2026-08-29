@@ -5,6 +5,7 @@ Supports two sources:
   scriptblox — scriptblox.com
 """
 import html
+import re
 import sys
 import textwrap
 
@@ -16,6 +17,7 @@ from rich import box
 
 from . import api
 from . import scriptblox
+from . import hunter
 
 # Force UTF-8 on Windows to handle emoji in script titles
 if sys.platform == "win32":
@@ -62,6 +64,10 @@ def _sbx_to_rs(s: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
+
+def _slug_cli(text):  # slug for out-dir naming
+    return re.sub(r'[^A-Za-z0-9._-]+', '_', text).strip('_') or "all"
+
 
 def _fmt_script_row(script: dict) -> tuple[str, str, str, str, str]:
     title = escape(script.get("title", "")[:60])
@@ -234,7 +240,7 @@ def _print_script_detail(script: dict) -> None:
 
 
 @click.group()
-@click.version_option(version="0.2.0", prog_name="rs")
+@click.version_option(version="0.3.0", prog_name="rs")
 def cli():
     """rs — browse Roblox scripts from the terminal.
 
@@ -448,6 +454,58 @@ def trending_cmd(source):
             "  [dim]Use `rs script -s scriptblox <id>` for details, "
             "`rs raw -s scriptblox <id>` for the Lua code.[/dim]\n"
         )
+
+
+# ---------------------------------------------------------------------------
+# hunt
+# ---------------------------------------------------------------------------
+
+
+@cli.command("hunt")
+@click.option("--source", "-s", "sources", type=click.Choice(SOURCES),
+              multiple=True, show_default=True, default=("rscripts",),
+              help="Sources to scan (repeatable)")
+@click.option("--query", "-q", "queries", multiple=True, default=(),
+              help="Search query (repeatable; omit to browse popular pages)")
+@click.option("--pages", "-p", default=3, show_default=True,
+              help="Pages to scan per source/query")
+@click.option("--order-by", default="views", show_default=True,
+              type=click.Choice(["date", "views", "likes"], case_sensitive=False),
+              help="Browse sort field (rscripts only)")
+@click.option("--obf", "obf_filter", default=None,
+              help="Only save scripts from this obfuscator (e.g. Luraph); "
+                   "default saves all obfuscated")
+@click.option("--out", "-o", "out_dir", default=None,
+              help="Output dir [default: ./hunt-<obf|all>]")
+def hunt_cmd(sources, queries, pages, order_by, obf_filter, out_dir):
+    """Hunt obfuscated scripts; follow loader URLs to the real payload.
+
+    \\b
+    Examples:
+      rs hunt -s rscripts -s scriptblox -q "hub" --obf Luraph -p 5
+      rs hunt --obf Luraph --out luraph-hits
+      rs hunt -q "infected lands" -q "infectedlands"
+    """
+    out_dir = out_dir or f"hunt-{_slug_cli(obf_filter) if obf_filter else 'all'}"
+    console.print(f"[dim]Hunting {', '.join(sources)} -> {out_dir}/[/dim]")
+    report = hunter.hunt(
+        sources=list(sources), queries=list(queries), pages=pages,
+        out_dir=out_dir, obf_filter=obf_filter, order_by=order_by.lower(),
+        log=lambda msg: console.print(f"[dim]{escape(msg)}[/dim]"),
+    )
+    table = Table(title=f"Hunt results — {out_dir}/", box=box.SIMPLE_HEAVY)
+    table.add_column("Obfuscator", style="cyan", no_wrap=True)
+    table.add_column("Title", max_width=44)
+    table.add_column("Size", justify="right")
+    table.add_column("Provenance", max_width=48, style="dim")
+    for r in report.rows:
+        label = r["obf"] + (f" {r['ver']}" if r["ver"] else "")
+        table.add_row(label, escape(r["title"][:44]), f"{r['size']:,}",
+                      escape(r["provenance"]))
+    console.print(table)
+    console.print(
+        f"  {len(report.rows)} saved, {report.fetched} payloads fetched, "
+        f"{report.errors} fetch errors -> [cyan]{out_dir}/[/cyan]\n")
 
 
 # ---------------------------------------------------------------------------
