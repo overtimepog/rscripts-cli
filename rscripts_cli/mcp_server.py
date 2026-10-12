@@ -11,6 +11,7 @@ except ImportError:  # mcp >= 2.0 renamed FastMCP
 from . import api
 from . import scriptblox
 from . import gaps
+from . import auth
 
 mcp = FastMCP("rscripts", instructions="Browse and fetch Roblox scripts from rscripts.net and scriptblox.com")
 
@@ -234,6 +235,7 @@ def find_script_gaps(
 
 
 def main():
+    auth.ensure()  # renew a saved session if due; no prompt (stdio is the protocol)
     mcp.run()
 
 

@@ -1,6 +1,8 @@
 """API client for rscripts.net."""
 import requests
 
+from . import auth
+
 BASE_URL = "https://rscripts.net/api/v2"
 
 _session: requests.Session | None = None
@@ -14,6 +16,7 @@ def _get_session() -> requests.Session:
             "User-Agent": "rscripts-cli/0.1.0",
             "Accept": "application/json",
         })
+        auth.attach(_session)  # logged-in requests when a session is saved
     return _session
 
 

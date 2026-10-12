@@ -19,6 +19,7 @@ from . import api
 from . import scriptblox
 from . import hunter
 from . import gaps
+from . import auth
 
 # Force UTF-8 on Windows to handle emoji in script titles
 if sys.platform == "win32":
@@ -29,6 +30,7 @@ if sys.platform == "win32":
         pass
 
 console = Console()
+err_console = Console(stderr=True)
 
 SOURCES = ["rscripts", "scriptblox"]
 
@@ -241,8 +243,9 @@ def _print_script_detail(script: dict) -> None:
 
 
 @click.group()
-@click.version_option(version="0.4.0", prog_name="rs")
-def cli():
+@click.version_option(version="0.5.0", prog_name="rs")
+@click.pass_context
+def cli(ctx):
     """rs — browse Roblox scripts from the terminal.
 
     \b
@@ -253,11 +256,85 @@ def cli():
       raw     <id>        Print the raw Lua code of a script
       hunt                Hunt obfuscated payloads (follows loaders)
       gaps                Popular games with few scripts
+      login / logout      Save / remove your rscripts.net session cookie
+      whoami              Show (and renew) the saved session
 
     \b
     Use --source rscripts|scriptblox on any command to switch sources
     (default: rscripts).
     """
+    if ctx.invoked_subcommand in ("login", "logout", "whoami"):
+        return
+    # Renew the saved session when due; ask for a new cookie if it died and
+    # we're on a terminal, otherwise carry on anonymously.
+    interactive = sys.stdin.isatty() and sys.stderr.isatty()
+    auth.ensure(
+        prompt=(lambda msg: click.prompt(msg, default="", hide_input=True,
+                                         show_default=False, err=True)) if interactive else None,
+        warn=lambda msg: err_console.print(f"[yellow]{escape(msg)}[/yellow]"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# auth
+# ---------------------------------------------------------------------------
+
+
+def _print_session(info: dict) -> None:
+    exp = (info.get("expires_at") or "")[:10] or "?"
+    tier = f" · tier {info['tier']}" if info.get("tier") else ""
+    src = " (from RS_SESSION_TOKEN)" if info.get("from_env") else ""
+    console.print(f"Logged in as [bold cyan]{escape(str(info.get('username') or '?'))}[/bold cyan]"
+                  f"{tier} · session valid until [green]{exp}[/green]{src}")
+
+
+@cli.command("login")
+@click.argument("cookie", required=False)
+def login_cmd(cookie):
+    """Save your rscripts.net session cookie (prompts if not given).
+
+    Accepts the bare cookie value, `name=value`, or a whole Cookie header.
+    Stored in ~/.config/rscripts-cli/session.json and renewed automatically.
+    Passing it as an argument leaves it in shell history — prefer the prompt.
+    """
+    if not cookie:
+        console.print(f"[dim]{auth.HOW_TO}[/dim]")
+        cookie = click.prompt("Session cookie", hide_input=True)
+    try:
+        info = auth.login(cookie)
+    except auth.AuthError as e:
+        console.print(f"[red]Login failed:[/red] {e}")
+        sys.exit(1)
+    _print_session(info)
+    console.print(f"[dim]Saved to {auth.SESSION_FILE}[/dim]")
+
+
+@cli.command("logout")
+def logout_cmd():
+    """Forget the saved session cookie (does not end it on the site)."""
+    console.print("Session removed." if auth.clear() else "No saved session.")
+
+
+@cli.command("whoami")
+def whoami_cmd():
+    """Check the saved session, renewing it now."""
+    d = auth.load()
+    if not d.get("token"):
+        console.print("Not logged in — run [cyan]rs login[/cyan].")
+        sys.exit(1)
+    try:
+        info = auth.check()
+    except auth.SessionRejected:
+        console.print("[red]Session expired or invalid[/red] — run [cyan]rs login[/cyan].")
+        sys.exit(1)
+    except auth.AuthError as e:
+        console.print(f"[yellow]Couldn't reach rscripts.net:[/yellow] {e}")
+        sys.exit(1)
+    d.update(info)
+    auth.save(d)
+    _print_session(d)
+    if info.get("rotated_at"):
+        console.print("[dim]Server rotated the token; saved the new one.[/dim]")
 
 
 # ---------------------------------------------------------------------------

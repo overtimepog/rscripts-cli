@@ -24,6 +24,29 @@ pip install -e .
 rs --help
 ```
 
+### Log in (optional)
+
+Requests to rscripts.net can carry your session so they run as you.
+
+```bash
+rs login      # prompts (hidden) for the cookie; also accepts name=value or a whole Cookie header
+rs whoami     # shows the account + expiry, renewing the session now
+rs logout     # forgets the saved cookie
+```
+
+Copy the cookie from a logged-in browser: rscripts.net → DevTools →
+Application → Cookies → `https://rscripts.net` → value of
+`__Secure-better-auth.session_token`.
+
+It's saved to `~/.config/rscripts-cli/session.json` (override with
+`RS_CONFIG_DIR`, or skip the file with `RS_SESSION_TOKEN`). Sessions slide:
+once a day, or when expiry is within a week, `rs` touches
+`/api/auth/get-session`, which extends the session and saves any token the
+server rotates. A session used at least every ~90 days never expires. If it
+does die, `rs` asks for a new cookie in a terminal and falls back to anonymous
+requests elsewhere (pipes, the MCP server). A network or Cloudflare error never
+discards the saved session.
+
 ### Browse scripts
 
 ```bash
