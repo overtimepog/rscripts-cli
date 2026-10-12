@@ -18,6 +18,7 @@ from rich import box
 from . import api
 from . import scriptblox
 from . import hunter
+from . import gaps
 
 # Force UTF-8 on Windows to handle emoji in script titles
 if sys.platform == "win32":
@@ -240,7 +241,7 @@ def _print_script_detail(script: dict) -> None:
 
 
 @click.group()
-@click.version_option(version="0.3.0", prog_name="rs")
+@click.version_option(version="0.4.0", prog_name="rs")
 def cli():
     """rs — browse Roblox scripts from the terminal.
 
@@ -250,6 +251,8 @@ def cli():
       script  <id>        View a script's details
       trending            Show trending scripts
       raw     <id>        Print the raw Lua code of a script
+      hunt                Hunt obfuscated payloads (follows loaders)
+      gaps                Popular games with few scripts
 
     \b
     Use --source rscripts|scriptblox on any command to switch sources
@@ -506,6 +509,146 @@ def hunt_cmd(sources, queries, pages, order_by, obf_filter, out_dir):
     console.print(
         f"  {len(report.rows)} saved, {report.fetched} payloads fetched, "
         f"{report.errors} fetch errors -> [cyan]{out_dir}/[/cyan]\n")
+
+
+# ---------------------------------------------------------------------------
+# gaps
+# ---------------------------------------------------------------------------
+
+
+@cli.command("gaps")
+@click.option("--min-players", "-m", default=1500, show_default=True,
+              help="Only count games with at least this many players now")
+@click.option("--days", "-d", default=60, show_default=True,
+              help="Window for 'recent' scripts (recomputed from cache, no re-fetch)")
+@click.option("--top", "-n", default=40, show_default=True, help="Rows to show")
+@click.option("--place", "places", multiple=True, type=int,
+              help="Count these place ids instead of the explore page (repeatable)")
+@click.option("--known", "known", multiple=True, type=click.Path(exists=True),
+              help="File/dir of place ids already worked on; flagged with * (repeatable)")
+@click.option("--hide-known", is_flag=True, help="Drop --known games from the table")
+@click.option("--genre", "-g", "genres", multiple=True,
+              help="Keep games whose genre matches (substring of legacy/L1/L2 genre, "
+                   "e.g. rpg, roleplay, fps, shooter, tycoon; repeatable = OR)")
+@click.option("--exclude-genre", "-x", "exclude_genres", multiple=True,
+              help="Drop games whose genre matches (repeatable)")
+@click.option("--list-genres", is_flag=True,
+              help="List the genres among candidate games (with counts) and exit")
+@click.option("--max-recent", default=None, type=int,
+              help="Only show games with at most this many recent scripts")
+@click.option("--sort", "sort_by", default="score", show_default=True,
+              type=click.Choice(["score", "players", "recent"]),
+              help="score = players per recent script")
+@click.option("--refresh", is_flag=True, help="Ignore the cache and re-count everything")
+@click.option("--ttl", default=12.0, show_default=True, help="Cache lifetime in hours")
+@click.option("--cache", "cache_path", default=None, type=click.Path(),
+              help=f"Cache file [default: {gaps.DEFAULT_CACHE}]")
+@click.option("--workers", "-w", default=4, show_default=True, help="Parallel games")
+@click.option("--json", "json_out", default=None, type=click.Path(),
+              help="Also write every scored row to this JSON file")
+def gaps_cmd(min_players, days, top, places, known, hide_known, genres, exclude_genres,
+             list_genres, max_recent, sort_by, refresh, ttl, cache_path, workers, json_out):
+    """Find popular games with few scripts (ripe for a new one).
+
+    Counts scripts linked to each game's root place on rscripts AND scriptblox.
+    Universal hubs are ignored. Results are cached per game, so a re-run is
+    instant until --ttl expires.
+
+    \b
+    Columns: rs/sb = total/recent; 'pp/scr' = players per recent script;
+    'Newest' = newest script (MM-DD); '+' after a count = page cap hit (real
+    total is higher). --json rows carry more (sb_alive, keyless, views).
+
+    \b
+    Examples:
+      rs gaps
+      rs gaps -m 5000 --max-recent 2 --known ../memory/MEMORY.md --hide-known
+      rs gaps --place 107535308163741 --place 9391468976
+      rs gaps --days 30 --json gaps.json
+      rs gaps -g rpg -g roleplay -x "avatar sim"
+      rs gaps --list-genres
+    """
+    import json as _json
+    log = lambda msg: console.print(f"[dim]{escape(msg)}[/dim]")
+    try:
+        if places:
+            games = gaps.games_for_places(list(places))
+        else:
+            games = [g for g in gaps.roblox_games(log=log) if g["playing"] >= min_players]
+        gaps.fill_genres(games, cache_path or gaps.DEFAULT_CACHE, log=log)
+    except Exception as e:
+        console.print(f"[red]Error fetching games:[/red] {e}")
+        return
+
+    if list_genres:
+        from collections import Counter
+        for key, label in (("genre", "Legacy genre"), ("genre_l1", "Genre (L1)"),
+                           ("genre_l2", "Subgenre (L2)")):
+            c = Counter(g.get(key) or "-" for g in games)
+            t = Table(title=f"{label} — {len(games)} games", box=box.SIMPLE_HEAVY)
+            t.add_column("Genre")
+            t.add_column("Games", justify="right")
+            t.add_column("Players", justify="right")
+            for name, n in c.most_common():
+                pl = sum(g["playing"] for g in games if (g.get(key) or "-") == name)
+                t.add_row(escape(name), str(n), f"{pl:,}")
+            console.print(t)
+        return
+
+    if genres:
+        games = [g for g in games if gaps.genre_match(g, list(genres))]
+    if exclude_genres:
+        games = [g for g in games if not gaps.genre_match(g, list(exclude_genres))]
+    if not games:
+        console.print("[yellow]No games match those genre filters (try --list-genres).[/yellow]")
+        return
+
+    report = gaps.scan(games, days=days, cache_path=cache_path or gaps.DEFAULT_CACHE,
+                       ttl_hours=ttl, refresh=refresh, workers=workers, log=log)
+    seen = gaps.known_ids(list(known)) if known else set()
+    rows = report.rows
+    for r in rows:
+        r["known"] = str(r["rootPlaceId"]) in seen
+    if hide_known:
+        rows = [r for r in rows if not r["known"]]
+    if max_recent is not None:
+        rows = [r for r in rows if r["recent"] <= max_recent]
+    key = {"score": lambda r: -r["score"], "players": lambda r: -r["playing"],
+           "recent": lambda r: (r["recent"], -r["playing"])}[sort_by]
+    rows.sort(key=key)
+
+    if json_out:
+        with open(json_out, "w", encoding="utf-8") as f:
+            _json.dump(rows, f, indent=1, ensure_ascii=False)
+
+    table = Table(title=f"Script gaps — recent = last {days} days", box=box.SIMPLE_HEAVY,
+                  pad_edge=False)
+    short = lambda n: f"{n / 1000:.0f}k" if n >= 10_000 else f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+    table.add_column("Players", justify="right", style="bold", no_wrap=True)
+    table.add_column("rs", justify="right", no_wrap=True)
+    table.add_column("sb", justify="right", no_wrap=True)
+    table.add_column("pp/scr", justify="right", style="green", no_wrap=True)
+    table.add_column("Newest", style="dim", no_wrap=True)
+    table.add_column("Place", style="cyan", no_wrap=True)
+    table.add_column("Game", min_width=14, no_wrap=True, overflow="ellipsis")
+    table.add_column("Genre", style="magenta", max_width=30, no_wrap=True, overflow="ellipsis")
+    for r in rows[:top]:
+        cap = lambda src: "+" if r[f"{src}_capped"] else ""
+        name = ("* " if r["known"] else "") + gaps.search_query(r["name"])
+        table.add_row(
+            short(r["playing"]),
+            f"{r['rs_total']}{cap('rs')}/{r['rs_recent']}",
+            f"{r['sb_total']}{cap('sb')}/{r['sb_recent']}",
+            short(r["score"]),
+            r["newest"][5:] if r["newest"] else "-",
+            str(r["rootPlaceId"]),
+            escape(name[:44]) + (" [red]ERR[/red]" if r["errors"] else ""),
+            escape(gaps.genre_label(r)),
+        )
+    console.print(table)
+    console.print(
+        f"  {len(report.rows)} games ({report.cached} cached, {report.fetched} fetched, "
+        f"{report.errors} with errors)" + (f" -> [cyan]{json_out}[/cyan]" if json_out else "") + "\n")
 
 
 # ---------------------------------------------------------------------------

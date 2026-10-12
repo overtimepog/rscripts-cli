@@ -3,10 +3,14 @@ import html
 import re
 from typing import Annotated
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError:  # mcp >= 2.0 renamed FastMCP
+    from mcp.server import MCPServer as FastMCP
 
 from . import api
 from . import scriptblox
+from . import gaps
 
 mcp = FastMCP("rscripts", instructions="Browse and fetch Roblox scripts from rscripts.net and scriptblox.com")
 
@@ -197,6 +201,36 @@ def get_raw_script(script_id: str,
     if not raw_url:
         raise ValueError("No raw script URL available for this script")
     return api.fetch_raw_script(raw_url)
+
+
+@mcp.tool()
+def find_script_gaps(
+    min_players: Annotated[int, "Only games with at least this many players now"] = 1500,
+    days: Annotated[int, "Window for counting 'recent' scripts"] = 60,
+    max_recent: Annotated[int | None, "Only games with at most this many recent scripts"] = None,
+    place_ids: Annotated[list[int] | None, "Count these place ids instead of the explore page"] = None,
+    genres: Annotated[list[str] | None, "Keep games whose genre contains any of these (e.g. rpg, roleplay, fps, shooter)"] = None,
+    exclude_genres: Annotated[list[str] | None, "Drop games whose genre contains any of these"] = None,
+    top: Annotated[int, "Rows to return"] = 40,
+    refresh: Annotated[bool, "Ignore the per-game cache"] = False,
+) -> list[dict]:
+    """Popular Roblox games with few scripts on rscripts + scriptblox.
+
+    Ranked by players per recent script (score). Only scripts linked to the
+    game's root place count; universal hubs are ignored. Cached per game (12 h).
+    Genre filters match legacy genre (RPG, FPS), L1 (Shooter, Survival) and L2."""
+    games = (gaps.games_for_places(place_ids) if place_ids
+             else [g for g in gaps.roblox_games() if g["playing"] >= min_players])
+    gaps.fill_genres(games)
+    if genres:
+        games = [g for g in games if gaps.genre_match(g, genres)]
+    if exclude_genres:
+        games = [g for g in games if not gaps.genre_match(g, exclude_genres)]
+    rows = gaps.scan(games, days=days, refresh=refresh).rows
+    if max_recent is not None:
+        rows = [r for r in rows if r["recent"] <= max_recent]
+    rows.sort(key=lambda r: -r["score"])
+    return rows[:top]
 
 
 def main():
